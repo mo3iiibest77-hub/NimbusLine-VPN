@@ -24,7 +24,8 @@ class MainActivity : ComponentActivity() {
     }
     @Composable private fun Field(label: String, value: String, onValue: (String) -> Unit) =
         OutlinedTextField(value, onValue, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = true)
-    @OptIn(ExperimentalMaterial3Api::class)\n    @Composable private fun Ui() {
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable private fun Ui() {
         var list by remember { mutableStateOf(repo.all()) }
         var raw by remember { mutableStateOf("") }
         var subscription by remember { mutableStateOf("") }
