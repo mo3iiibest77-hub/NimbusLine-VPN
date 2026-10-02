@@ -95,16 +95,17 @@ if "android.permission.FOREGROUND_SERVICE_DATA_SYNC" not in m:
         '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
         1,
     )
-worker_service = """        <service
-            android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync"
-            tools:node="merge" />
+worker_service = """    <service
+        android:name="androidx.work.impl.foreground.SystemForegroundService"
+        android:foregroundServiceType="dataSync"
+        tools:node="merge" />
 """
 if "androidx.work.impl.foreground.SystemForegroundService" not in m:
-    m = m.replace(
-        "    <application",
-        "    <application\n" + worker_service,
-        1,
+    m = re.sub(
+        r'(<application\\b[^>]*>)',
+        r'\\1\\n' + worker_service.rstrip(),
+        m,
+        count=1,
     )
 
 manifest.write_text(m)
