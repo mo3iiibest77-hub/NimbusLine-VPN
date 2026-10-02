@@ -19,7 +19,7 @@ jobs:
       - name: Fetch Xray Android binding
         run: |
           mkdir -p app/libs
-          curl -L --fail -o app/libs/libv2ray.aar https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.7.31/libv2ray.aar
+          curl -L --fail -o app/libs/libv2ray.aar https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.9.9/libv2ray.aar
           sha256sum app/libs/libv2ray.aar
           test -s app/libs/libv2ray.aar
       - name: Build
