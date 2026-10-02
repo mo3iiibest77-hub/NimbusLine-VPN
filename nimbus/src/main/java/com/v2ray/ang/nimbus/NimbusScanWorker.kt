@@ -68,7 +68,7 @@ class NimbusScanWorker(
                 }
             }
         val selectedGuid = MmkvManager.getSelectServer()
-        val selected = selectedGuid.takeIf { it.isNotBlank() }?.let { guid ->
+        val selected = selectedGuid?.takeIf { it.isNotBlank() }?.let { guid ->
             MmkvManager.decodeServerConfig(guid)?.takeIf { NimbusPolicy.isSupported(it) }?.let { guid to it }
         }
         return (subscribed + listOfNotNull(selected)).distinctBy { it.first }
@@ -85,9 +85,7 @@ class NimbusScanWorker(
             context = applicationContext,
             ispName = ispKey,
             guid = guid,
-            onProgress = { done, total, _, _ ->
-                setProgress(androidx.work.workDataOf("phase" to "discovery", "done" to done, "total" to total))
-            },
+            onProgress = { _, _, _, _ -> },
             onFinish = { cidrs ->
                 if (!result.isCompleted) result.complete(cidrs)
             }
@@ -102,12 +100,7 @@ class NimbusScanWorker(
             guid = guid,
             ispName = ispKey,
             callback = object : ScanCallback {
-                override fun onProgress(result: CandidateResult, done: Int, total: Int) {
-                    setProgress(androidx.work.workDataOf(
-                        "phase" to "scan", "done" to done, "total" to total,
-                        "ip" to result.ip, "uploadKBps" to result.uploadKBps
-                    ))
-                }
+                override fun onProgress(result: CandidateResult, done: Int, total: Int) { }
 
                 override fun onFinish(best: CandidateResult?) {
                     if (!result.isCompleted) result.complete(best)
