@@ -1,0 +1,350 @@
+package com.v2ray.ang.senpai
+
+import android.content.Context
+import com.v2ray.ang.core.CoreConfigManager
+import com.v2ray.ang.core.CoreNativeManager
+import com.v2ray.ang.dto.entities.ProfileItem
+import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.util.LogUtil
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import com.v2ray.ang.senpai.IspManager
+import com.v2ray.ang.senpai.IspProfile
+import kotlin.random.Random
+
+data class CandidateResult(
+    val ip: String,
+    val latencyMs: Long,
+    val uploadKBps: Long = 0L,
+    val downloadKBps: Long = 0L,
+) {
+    val isSuccess: Boolean get() = latencyMs >= 0
+}
+
+interface ScanCallback {
+    fun onProgress(result: CandidateResult, done: Int, total: Int)
+    fun onFinish(best: CandidateResult?)
+    fun onCancelled()
+}
+
+object CloudflareScanner {
+    private const val TAG = "CloudflareScanner"
+    private const val TEST_URL = "https://cp.cloudflare.com/cdn-cgi/trace"
+    private const val DEFAULT_CONCURRENCY = 4
+    private const val IPS_PER_CIDR = 2
+    private const val MAX_CANDIDATES = 30
+
+    private val PRODUCTION_FINALMASK = buildString {
+        append("""{"tcp":[""")
+        append("""{"type":"fragment","settings":{"packets":"tlshello","lengths":["5","94","1"],"delays":["0"],"maxSplit":"0"}},""")
+        append("""{"type":"fragment","settings":{"packets":"1-1","lengths":["109","1"],"delays":["1"],"maxSplit":"355"}}""")
+        append("""]}""")
+    }
+
+    private const val PRODUCTION_CIPHERSUITES =
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:" +
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:" +
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:" +
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:" +
+        "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:" +
+        "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+
+    private var scanJob = SupervisorJob()
+    private var scanScope = CoroutineScope(scanJob + Dispatchers.IO)
+
+    private fun generateCandidates(context: Context): List<String> {
+        val candidates = mutableListOf<String>()
+        try {
+            val lines = context.assets.open("cf_ranges_v4.txt")
+                .bufferedReader()
+                .readLines()
+                .filter { it.isNotBlank() && !it.startsWith("#") }
+                .shuffled()
+
+            for (cidr in lines) {
+                if (candidates.size >= MAX_CANDIDATES) break
+                try {
+                    val parts = cidr.trim().split("/")
+                    if (parts.size != 2) continue
+                    val ips = randomIpsFromCidr(parts[0], parts[1].toInt(), IPS_PER_CIDR)
+                    candidates.addAll(ips)
+                } catch (e: Exception) {
+                    LogUtil.d(TAG, "Skip CIDR: $cidr")
+                }
+            }
+        } catch (e: Exception) {
+            LogUtil.e(TAG, "Failed to load cf_ranges_v4.txt: ${e.message}")
+            candidates.addAll(listOf("104.16.0.1", "104.17.0.1", "172.64.0.1", "162.159.0.1"))
+        }
+        return candidates.take(MAX_CANDIDATES)
+    }
+
+    private fun randomIpsFromCidr(baseIp: String, prefix: Int, count: Int): List<String> {
+        val result = mutableListOf<String>()
+        try {
+            val base = ipToLong(baseIp)
+            val hostBits = 32 - prefix
+            if (hostBits <= 0) { result.add(baseIp); return result }
+            val maxHosts = (1L shl hostBits) - 2
+            if (maxHosts <= 0) { result.add(baseIp); return result }
+            val seen = mutableSetOf<Long>()
+            repeat(count * 3) {
+                if (result.size >= count) return result
+                val offset = (Random.nextLong() and Long.MAX_VALUE) % maxHosts + 1
+                if (seen.add(offset)) result.add(longToIp(base + offset))
+            }
+        } catch (e: Exception) {
+            LogUtil.d(TAG, "randomIpsFromCidr error: ${e.message}")
+        }
+        return result
+    }
+
+    private fun ipToLong(ip: String): Long {
+        val p = ip.split(".")
+        return (p[0].toLong() shl 24) or (p[1].toLong() shl 16) or (p[2].toLong() shl 8) or p[3].toLong()
+    }
+
+    private fun longToIp(n: Long) =
+        "${(n shr 24) and 0xFF}.${(n shr 16) and 0xFF}.${(n shr 8) and 0xFF}.${n and 0xFF}"
+
+    fun scan(
+        context: Context,
+        guid: String,
+        candidates: List<String> = emptyList(),
+        concurrency: Int = DEFAULT_CONCURRENCY,
+        callback: ScanCallback,
+    ) {
+        cancel()
+        scanJob = SupervisorJob()
+        scanScope = CoroutineScope(scanJob + Dispatchers.IO)
+        scanScope.launch {
+            val actual = if (candidates.isEmpty()) generateCandidates(context) else candidates
+            LogUtil.i(TAG, "Scan started: ${actual.size} candidates")
+            runScan(context, guid, actual, concurrency, callback)
+        }
+    }
+
+    fun cancel() { scanJob.cancel() }
+
+    // ── Discovery: تست کامل با threshold نرم — فقط رنج‌هایی که واقعاً کار می‌کنن ────
+    // لایه ۱: از هر CIDR یه IP تست کامل می‌زنه (latency + upload)
+    // threshold: upload >= 20 KB/s — نرمه، هر رنجی که حداقل یه IP خوب داشت ذخیره میشه
+    fun discoverGoodCidrs(
+        context: Context,
+        ispName: String,
+        guid: String,
+        onProgress: (done: Int, total: Int, cidr: String, responded: Boolean) -> Unit,
+        onFinish: (goodCidrs: List<String>) -> Unit,
+    ) {
+        cancel()
+        scanJob = SupervisorJob()
+        scanScope = CoroutineScope(scanJob + Dispatchers.IO)
+        scanScope.launch {
+            val allLines = try {
+                context.assets.open("cf_ranges_v4.txt")
+                    .bufferedReader().readLines()
+                    .filter { it.isNotBlank() && !it.startsWith("#") }
+            } catch (e: Exception) { emptyList() }
+
+            val existing     = IspManager.getProfile(context, ispName)
+            val startFrom    = existing?.lastScannedIndex ?: 0
+            val alreadyFound = existing?.goodCidrs?.toMutableList() ?: mutableListOf()
+            val lines = if (startFrom > 0 && startFrom < allLines.size) {
+                LogUtil.i(TAG, "Discovery resuming from $startFrom for $ispName")
+                allLines.drop(startFrom)
+            } else allLines
+
+            val baseProfile = MmkvManager.decodeServerConfig(guid) ?: run {
+                withContext(Dispatchers.Main) { onFinish(emptyList()) }
+                return@launch
+            }
+
+            val total = allLines.size
+            var done  = startFrom
+            val newGoodCidrs = mutableListOf<Pair<String, Long>>()
+            val semaphore = Semaphore(6)
+            val lock = Any()
+
+            val jobs = lines.map { cidr ->
+                scanScope.launch {
+                    semaphore.withPermit {
+                        val parts = cidr.trim().split("/")
+                        var bestUpload = 0L
+                        var hasGoodIp  = false
+                        if (parts.size == 2) {
+                            try {
+                                val ips = randomIpsFromCidr(parts[0], parts[1].toInt(), 2)
+                                for (ip in ips) {
+                                    val r = testCandidate(context, guid, baseProfile, ip)
+                                    if (r.isSuccess && r.uploadKBps >= 20L) {
+                                        hasGoodIp = true
+                                        if (r.uploadKBps > bestUpload) bestUpload = r.uploadKBps
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                LogUtil.d(TAG, "Discovery error $cidr: ${e.message}")
+                            }
+                        }
+                        synchronized(lock) {
+                            done++
+                            if (hasGoodIp) newGoodCidrs.add(cidr.trim() to bestUpload)
+                            if (done % 20 == 0) {
+                                val partial = (alreadyFound + newGoodCidrs.map { it.first }).distinct()
+                                IspManager.savePartialProgress(context, ispName, partial, done)
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            onProgress(done, total, cidr.trim(), hasGoodIp)
+                        }
+                    }
+                }
+            }
+            try {
+                joinAll(*jobs.toTypedArray())
+                val allGood = (alreadyFound + newGoodCidrs.sortedByDescending { it.second }.map { it.first }).distinct().take(30)
+                IspManager.saveProfile(context, IspProfile(ispName, allGood, lastScannedIndex = 0))
+                withContext(Dispatchers.Main) { onFinish(allGood) }
+            } catch (_: CancellationException) {
+                val partial = (alreadyFound + newGoodCidrs.map { it.first }).distinct()
+                IspManager.savePartialProgress(context, ispName, partial, done)
+                withContext(Dispatchers.Main) { onFinish(partial) }
+            }
+        }
+    }
+
+    fun scanForIsp(
+        context: Context,
+        guid: String,
+        ispName: String,
+        concurrency: Int = DEFAULT_CONCURRENCY,
+        callback: ScanCallback,
+    ) {
+        val profile = IspManager.getProfile(context, ispName)
+        if (profile == null || profile.goodCidrs.isEmpty()) {
+            // هنوز discovery نشده — fallback به اسکن معمولی
+            scan(context, guid, emptyList(), concurrency, callback)
+            return
+        }
+        cancel()
+        scanJob = SupervisorJob()
+        scanScope = CoroutineScope(scanJob + Dispatchers.IO)
+        scanScope.launch {
+            val candidates = mutableListOf<String>()
+            val shuffled = profile.goodCidrs.shuffled()
+            for (cidr in shuffled) {
+                if (candidates.size >= MAX_CANDIDATES) break
+                try {
+                    val parts = cidr.trim().split("/")
+                    if (parts.size != 2) continue
+                    candidates.addAll(randomIpsFromCidr(parts[0], parts[1].toInt(), IPS_PER_CIDR))
+                } catch (_: Exception) {}
+            }
+            LogUtil.i(TAG, "ISP=$ispName targeted scan: ${candidates.size} candidates from ${profile.goodCidrs.size} ranges")
+            runScan(context, guid, candidates.take(MAX_CANDIDATES), concurrency, callback)
+        }
+    }
+
+    private fun pingIp(ip: String): Boolean {
+        return try {
+            val proc = Runtime.getRuntime().exec(arrayOf("ping", "-c", "1", "-W", "1", ip))
+            proc.waitFor() == 0
+        } catch (e: Exception) { false }
+    }
+
+    fun applyBestIp(guid: String, bestIp: String): Boolean {
+        val profile = MmkvManager.decodeServerConfig(guid) ?: run {
+            LogUtil.e(TAG, "applyBestIp: not found guid=$guid")
+            return false
+        }
+        profile.server = bestIp
+        profile.fingerPrint = "unsafe"
+        if (profile.finalMask.isNullOrBlank()) profile.finalMask = PRODUCTION_FINALMASK
+        if (profile.cipherSuites.isNullOrBlank()) profile.cipherSuites = PRODUCTION_CIPHERSUITES
+        MmkvManager.encodeServerConfig(guid, profile)
+        LogUtil.i(TAG, "applyBestIp: $guid -> $bestIp")
+        return true
+    }
+
+    private suspend fun runScan(
+        context: Context,
+        guid: String,
+        candidates: List<String>,
+        concurrency: Int,
+        callback: ScanCallback,
+    ) {
+        val baseProfile = MmkvManager.decodeServerConfig(guid) ?: run {
+            callback.onFinish(null); return
+        }
+        val total = candidates.size
+        var done = 0
+        val results = mutableListOf<CandidateResult>()
+        val semaphore = Semaphore(concurrency)
+        val lock = Any()
+        val jobs = candidates.map { ip ->
+            scanScope.launch {
+                semaphore.withPermit {
+                    val result = testCandidate(context, guid, baseProfile, ip)
+                    synchronized(lock) { done++; results.add(result) }
+                    callback.onProgress(result, done, total)
+                }
+            }
+        }
+        try {
+            joinAll(*jobs.toTypedArray())
+            val best = results.filter { it.isSuccess }.maxByOrNull { it.uploadKBps }
+            LogUtil.i(TAG, "Done. Best: ${best?.ip} @ ${best?.latencyMs}ms up=${best?.uploadKBps}KB/s")
+            callback.onFinish(best)
+        } catch (_: CancellationException) {
+            callback.onCancelled()
+        } catch (e: Exception) {
+            LogUtil.e(TAG, "Scan error: ${e.message}", e)
+            callback.onFinish(null)
+        }
+    }
+
+    private suspend fun testCandidate(
+        context: Context,
+        baseGuid: String,
+        base: ProfileItem,
+        ip: String,
+    ): CandidateResult = withContext(Dispatchers.IO) {
+        val tempGuid = "cfscanner-$baseGuid-${ip.replace('.', '-').replace(':', '-')}"
+        return@withContext try {
+            // Keep scanner validation identical to the configuration that
+            // applyBestIp() writes to the real production profile.
+            val temp = base.copy(server = ip).apply {
+                fingerPrint = "unsafe"
+                if (finalMask.isNullOrBlank()) finalMask = PRODUCTION_FINALMASK
+                if (cipherSuites.isNullOrBlank()) cipherSuites = PRODUCTION_CIPHERSUITES
+            }
+            MmkvManager.encodeServerConfig(tempGuid, temp)
+            val cfg = CoreConfigManager.getV2rayConfig4Speedtest(context, tempGuid)
+            if (!cfg.status) return@withContext CandidateResult(ip, -1L)
+            val latency = CoreNativeManager.measureOutboundDelay(cfg.content, TEST_URL)
+            if (latency < 0) {
+                LogUtil.d(TAG, "$ip -> FAIL (latency)")
+                return@withContext CandidateResult(ip, -1L)
+            }
+            val traffic = com.v2ray.ang.service.RealTrafficSpeedTest.run(cfg.content)
+            if (traffic == null) {
+                LogUtil.d(TAG, "$ip -> FAIL (upload too slow)")
+                return@withContext CandidateResult(ip, -1L)
+            }
+            val uploadKBps = traffic.uploadBytesPerSecond / 1024
+            val downloadKBps = traffic.downloadBytesPerSecond / 1024
+            LogUtil.i(TAG, "$ip -> ${latency}ms up=${uploadKBps}KB/s dn=${downloadKBps}KB/s")
+            CandidateResult(ip, latency, uploadKBps, downloadKBps)
+        } catch (e: Exception) {
+            CandidateResult(ip, -1L)
+        } finally {
+            try { MmkvManager.removeServer(tempGuid) } catch (_: Exception) {}
+        }
+    }
+}
