@@ -102,8 +102,8 @@ worker_service = """    <service
 """
 if "androidx.work.impl.foreground.SystemForegroundService" not in m:
     m = re.sub(
-        r'(<application\\b[^>]*>)',
-        r'\\1\\n' + worker_service.rstrip(),
+        r'(<application\b[^>]*>)',
+        r'\1\n' + worker_service.rstrip(),
         m,
         count=1,
     )
