@@ -86,7 +86,7 @@ m = manifest.read_text()
 if "xmlns:tools=" not in m:
     m = m.replace(
         '<manifest xmlns:android="http://schemas.android.com/apk/res/android"',
-        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools"',
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">',
         1,
     )
 if "android.permission.FOREGROUND_SERVICE_DATA_SYNC" not in m:
