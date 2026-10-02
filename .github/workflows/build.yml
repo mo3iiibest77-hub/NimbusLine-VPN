@@ -1,0 +1,104 @@
+name: NimbusLine APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  PATTNG_REF: c489a5aa2b59ccb92be7c8f849ef80ef54f99c81
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NimbusLine
+        uses: actions/checkout@v4
+
+      - name: Checkout PattNG/Xray base
+        uses: actions/checkout@v4
+        with:
+          repository: mo3iiibest77-hub/PattNG
+          ref: ${{ env.PATTNG_REF }}
+          path: pattng
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Apply NimbusLine overlay
+        working-directory: pattng
+        run: |
+          python3 ../scripts/apply_nimbus_overlay.py
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          cmdline-tools-version: '14742923'
+          packages: 'platforms;android-37.0 build-tools;37.0.0 platform-tools'
+
+      - name: Install NDK
+        working-directory: pattng
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --channel=0 --install "ndk;29.0.14206865"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          sed -i '10i\
+          ndkVersion = "29.0.14206865"' V2rayNG/app/build.gradle.kts
+
+      - name: Restore cached libhevtun
+        id: cache-libhevtun-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: pattng/V2rayNG/app/libs
+          key: libhevtun-${{ runner.os }}-${{ hashFiles('pattng/.git/modules/hev-socks5-tunnel/HEAD') }}-${{ hashFiles('pattng/compile-hevtun.sh') }}
+
+      - name: Build libhevtun
+        if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
+        working-directory: pattng
+        run: bash compile-hevtun.sh
+
+      - name: Save libhevtun
+        if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: pattng/V2rayNG/app/libs
+          key: libhevtun-${{ runner.os }}-${{ hashFiles('pattng/.git/modules/hev-socks5-tunnel/HEAD') }}-${{ hashFiles('pattng/compile-hevtun.sh') }}
+
+      - name: Fetch Xray AAR
+        working-directory: pattng
+        run: |
+          pushd AndroidLibXrayLite
+          CURRENT_TAG=$(git describe --tags --abbrev=0)
+          echo "CURRENT_TAG=$CURRENT_TAG" >> $GITHUB_ENV
+          popd
+          mkdir -p V2rayNG/app/libs
+
+      - name: Download libv2ray
+        uses: robinraju/release-downloader@v1.13
+        with:
+          repository: '2dust/AndroidLibXrayLite'
+          tag: ${{ env.CURRENT_TAG }}
+          fileName: 'libv2ray.aar'
+          out-file-path: pattng/V2rayNG/app/libs/
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build unsigned release APK
+        working-directory: pattng/V2rayNG
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          ./gradlew assembleFdroidRelease --stacktrace
+
+      - name: Upload NimbusLine APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NimbusLine-fdroid-release
+          path: pattng/V2rayNG/app/build/outputs/apk/*/release/*.apk
