@@ -21,12 +21,12 @@ for src in OVERLAY.glob("*.kt"):
 app = ROOT / "app/src/main/java/com/v2ray/ang/AngApplication.kt"
 replace_once(
     app,
-    "import com.v2ray.ang.handler.SettingsManager\n",
+    "import com.v2ray.ang.handler.SettingsManager\nimport com.v2ray.ang.nimbus.NimbusBootstrap\n",
     "import com.v2ray.ang.handler.SettingsManager\nimport com.v2ray.ang.nimbus.NimbusBootstrap\n",
 )
 replace_once(
     app,
-    "ThemeManager.refresh()\n",
+    "ThemeManager.refresh()\n\n        NimbusBootstrap.initialize(this)\n",
     "ThemeManager.refresh()\n\n        NimbusBootstrap.initialize(this)\n",
 )
 
@@ -34,18 +34,18 @@ replace_once(
 manager = ROOT / "app/src/main/java/com/v2ray/ang/handler/AngConfigManager.kt"
 replace_once(
     manager,
-    "val count = parseConfigViaSub(configText, it.guid, false)\n",
+    "val count = parseConfigViaSub(configText, it.guid, false)\n            NimbusPolicy.filterSubscription(it.guid)\n",
     "val count = parseConfigViaSub(configText, it.guid, false)\n            NimbusPolicy.filterSubscription(it.guid)\n",
 )
 replace_once(
     manager,
-    "import com.v2ray.ang.util.Utils\n",
+    "import com.v2ray.ang.util.Utils\nimport com.v2ray.ang.nimbus.NimbusPolicy\n",
     "import com.v2ray.ang.util.Utils\nimport com.v2ray.ang.nimbus.NimbusPolicy\n",
 )
 # Direct pasted/imported configs are filtered too.
 replace_once(
     manager,
-    "if (countSub > 0) {\n                updateConfigViaSubAll()\n            }\n",
+    "if (countSub > 0) {\n                updateConfigViaSubAll()\n            }\n            NimbusPolicy.filterAllSubscriptions()\n",
     "if (countSub > 0) {\n                updateConfigViaSubAll()\n            }\n            NimbusPolicy.filterSubscription(subid)\n",
 )
 
