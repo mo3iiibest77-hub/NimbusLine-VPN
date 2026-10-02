@@ -44,7 +44,7 @@ class NimbusVpnService : VpnService() {
             require(selected.isNotEmpty()) { "Select at least one app for per-app tunneling" }
             selected.forEach { if (it != packageName) b.addAllowedApplication(it) }
         }
-        b.addDisallowedApplication(packageName)
+        if (!store.enabled()) b.addDisallowedApplication(packageName)
         tun = b.establish() ?: error("VPN interface creation failed")
         startForeground(7, note(p.remark))
         runtime.start(p, tun!!.fd)
