@@ -46,7 +46,7 @@ class NimbusScanWorker(
         val stored = IspManager.getProfile(applicationContext, ispKey)
 
         if (stored == null || stored.goodCidrs.isEmpty()) {
-            discover(base.guidForWorker(), ispKey)
+            discover(baseGuid, ispKey)
         }
 
         val best = scan(baseGuid, ispKey) ?: return Result.retry()
@@ -61,21 +61,22 @@ class NimbusScanWorker(
     }
 
     private fun supportedProfiles(): List<Pair<String, ProfileItem>> {
-        return MmkvManager.decodeSubscriptions()
+        val subscribed = MmkvManager.decodeSubscriptions()
             .flatMap { sub ->
                 MmkvManager.decodeServerList(sub.guid).mapNotNull { guid ->
-                    MmkvManager.decodeServerConfig(guid)?.let { profile ->
-                        if (NimbusPolicy.isSupported(profile)) guid to profile else null
-                    }
+                    MmkvManager.decodeServerConfig(guid)?.takeIf { NimbusPolicy.isSupported(it) }?.let { guid to it }
                 }
             }
-            .distinctBy { it.first }
+        val selectedGuid = MmkvManager.getSelectServer()
+        val selected = selectedGuid.takeIf { it.isNotBlank() }?.let { guid ->
+            MmkvManager.decodeServerConfig(guid)?.takeIf { NimbusPolicy.isSupported(it) }?.let { guid to it }
+        }
+        return (subscribed + listOfNotNull(selected)).distinctBy { it.first }
     }
 
-    private fun selectBaseProfile(profiles: List<Pair<String, ProfileItem>>): ProfileItem? {
+    private fun selectBaseProfile(profiles: List<Pair<String, ProfileItem>>): Pair<String, ProfileItem>? {
         val selected = MmkvManager.getSelectServer()
-        val selectedProfile = profiles.firstOrNull { it.first == selected }
-        return selectedProfile ?: profiles.firstOrNull()
+        return profiles.firstOrNull { it.first == selected } ?: profiles.firstOrNull()
     }
 
     private suspend fun discover(guid: String, ispKey: String) {
