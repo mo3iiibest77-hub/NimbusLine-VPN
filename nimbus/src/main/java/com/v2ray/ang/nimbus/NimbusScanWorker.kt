@@ -11,7 +11,7 @@ import androidx.work.WorkerParameters
 import com.v2ray.ang.R
 import com.v2ray.ang.core.CoreNativeManager
 import com.v2ray.ang.dto.entities.ProfileItem
-import com.v2ray.ang.handler.IspManager
+import com.v2ray.ang.senpai.IspManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.senpai.CandidateResult
 import com.v2ray.ang.senpai.CloudflareScanner
@@ -30,10 +30,15 @@ class NimbusScanWorker(
 
         CoreNativeManager.initCoreEnv(applicationContext)
 
+        val requestedGuid = inputData.getString(KEY_GUID)
         val profiles = supportedProfiles()
         if (profiles.isEmpty()) return Result.success()
 
-        val base = selectBaseProfile(profiles) ?: return Result.success()
+        val basePair = requestedGuid?.let { guid -> profiles.firstOrNull { it.first == guid } }
+            ?: selectBaseProfile(profiles)
+            ?: return Result.success()
+        val baseGuid = basePair.first
+        val base = basePair.second
         NimbusPolicy.prepare(base)
         MmkvManager.encodeServerConfig(baseGuid, base)
 
@@ -44,7 +49,7 @@ class NimbusScanWorker(
             discover(base.guidForWorker(), ispKey)
         }
 
-        val best = scan(base.guidForWorker(), ispKey) ?: return Result.retry()
+        val best = scan(baseGuid, ispKey) ?: return Result.retry()
 
         profiles.forEach { (guid, profile) ->
             NimbusPolicy.prepare(profile)
@@ -54,8 +59,6 @@ class NimbusScanWorker(
 
         return Result.success()
     }
-
-    private var baseGuid: String = ""
 
     private fun supportedProfiles(): List<Pair<String, ProfileItem>> {
         return MmkvManager.decodeSubscriptions()
@@ -72,9 +75,7 @@ class NimbusScanWorker(
     private fun selectBaseProfile(profiles: List<Pair<String, ProfileItem>>): ProfileItem? {
         val selected = MmkvManager.getSelectServer()
         val selectedProfile = profiles.firstOrNull { it.first == selected }
-        val pair = selectedProfile ?: profiles.firstOrNull() ?: return null
-        baseGuid = pair.first
-        return pair.second
+        return selectedProfile ?: profiles.firstOrNull()
     }
 
     private suspend fun discover(guid: String, ispKey: String) {
@@ -138,5 +139,5 @@ class NimbusScanWorker(
         )
     }
 
-    private fun ProfileItem.guidForWorker(): String = baseGuid
+    companion object { const val KEY_GUID = "profile_guid" }
 }
