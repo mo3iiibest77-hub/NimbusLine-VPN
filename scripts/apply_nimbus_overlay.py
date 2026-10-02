@@ -55,13 +55,6 @@ replace_once(
 base = ROOT / "app/src/main/java/com/v2ray/ang/ui/server/BaseServerActivity.kt"
 replace_once(
     base,
-    "import com.v2ray.ang.ui.compose.ThemeManager\n",
-    "import com.v2ray.ang.ui.compose.ThemeManager\n",
-)
-# ThemeManager is not imported by BaseServerActivity in current PattNG; add Nimbus pipeline
-# next to the existing compose imports using a stable anchor.
-replace_once(
-    base,
     "import com.v2ray.ang.ui.compose.verticalScrollbar\n",
     "import com.v2ray.ang.ui.compose.verticalScrollbar\nimport com.v2ray.ang.nimbus.NimbusConfigPipeline\nimport com.v2ray.ang.nimbus.NimbusPolicy\n",
 )
@@ -98,8 +91,8 @@ if "xmlns:tools=" not in m:
     )
 if "android.permission.FOREGROUND_SERVICE_DATA_SYNC" not in m:
     m = m.replace(
-        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools"',
-        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools"\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">',
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
         1,
     )
 worker_service = """        <service
